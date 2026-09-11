@@ -1,22 +1,8 @@
 name: Latest Images
 on:
-  push:
-    branches:
-      - stable-f44
-    paths-ignore:
-      - "**.md"
-      - ".github/workflows/moderator.yml"
-      - ".github/workflows/scorecard.yml"
-  merge_group:
-    branches:
-      - stable-f44
-  pull_request:
-    branches:
-      - stable-f44
-    paths-ignore:
-      - "**.md"
-      - ".github/workflows/moderator.yml"
-      - ".github/workflows/scorecard.yml"
+  # jcrben replica (2026-09-11): dropped upstream's push/pull_request/
+  # merge_group auto-triggers on stable-f44 — on-demand only, see
+  # trigger-schedule-stable-image.yml for the rationale.
   workflow_call:
   workflow_dispatch:
 

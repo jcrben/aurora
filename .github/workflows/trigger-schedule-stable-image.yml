@@ -1,8 +1,12 @@
 # We have this because we can't schedule builds on non-default branches
+#
+# jcrben replica (2026-09-11): upstream's weekly cron removed on purpose —
+# this fork builds on demand only (workflow_dispatch), to be considerate of
+# GitHub's public-repo Actions minutes rather than auto-building weekly like
+# ublue-os/aurora does. Trigger a real build manually from the Actions tab
+# ("Trigger Stable Image Build" -> Run workflow) when you actually want one.
 name: Trigger Stable Image Build
 on:
-  schedule:
-    - cron: "0 1 * * TUE" # Every Tuesday at 1:15 AM
   workflow_dispatch:
 
 permissions: {}

@@ -1,16 +1,10 @@
 name: Stable Images
 on:
-  # We do not want this to run after PR merges
-  # we are only publishing weekly :stable images
-
-  # We still want to know if things are broken
-  pull_request:
-    branches:
-      - stable-f44
-    paths-ignore:
-      - "**.md"
-      - ".github/workflows/moderator.yml"
-      - ".github/workflows/scorecard.yml"
+  # jcrben replica (2026-09-11): dropped the upstream pull_request CI-only
+  # trigger too — this fork isn't accepting external PRs, and even a
+  # non-publishing validation run still spends Actions minutes. workflow_call
+  # (from trigger-schedule-stable-image.yml's manual dispatch) and
+  # workflow_dispatch (direct manual run) are the only ways in.
   workflow_call:
   workflow_dispatch:
 

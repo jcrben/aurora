@@ -7,12 +7,10 @@ on:
   # For Branch-Protection check. Only the default branch is supported. See
   # https://github.com/ossf/scorecard/blob/main/docs/checks.md#branch-protection
   branch_protection_rule:
-  # To guarantee Maintained check is occasionally updated. See
-  # https://github.com/ossf/scorecard/blob/main/docs/checks.md#maintained
-  schedule:
-    - cron: "0 1 * * TUE" # Every Tuesday at 1:15 AM
-  push:
-    branches: [ "main" ]
+  # jcrben replica (2026-09-11): dropped upstream's weekly cron + push-to-main
+  # trigger — this scorecard scan isn't something this fork needs running
+  # unattended. workflow_dispatch added so it can still be run manually.
+  workflow_dispatch:
 
 # Declare default permissions as read only.
 permissions: read-all
