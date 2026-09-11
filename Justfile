@@ -674,8 +674,23 @@ generate-point $image=default_image $tag=default_tag $flavor=default_flavor:
 
     tags="/tmp/${IMAGE_NAME}-tags.json"
 
+    # jcrben fork (2026-09-11): on a brand-new personal GHCR namespace, the
+    # very first build's package has never been pushed, and skopeo gets a
+    # bare 403 (not a graceful 404) trying to list its tags — set -eoux pipefail
+    # then kills the whole job before reaching the "no tags yet -> POINT=1"
+    # logic below, which is exactly what SHOULD happen here. Only swallow that
+    # specific bootstrap case; any other skopeo failure still fails loudly.
     if [[ ! -f ${tags} ]]; then
-      skopeo list-tags docker://ghcr.io/{{ repo_organization }}/${IMAGE_NAME} > "${tags}"
+      if ! skopeo list-tags "docker://ghcr.io/{{ repo_organization }}/${IMAGE_NAME}" > "${tags}" 2>/tmp/skopeo-list-tags.err; then
+        if grep -qiE '403|not found|unauthorized' /tmp/skopeo-list-tags.err; then
+          echo "generate-point: ghcr.io/{{ repo_organization }}/${IMAGE_NAME} has no tags yet (first build) — treating as empty. skopeo said:" >&2
+          cat /tmp/skopeo-list-tags.err >&2
+          echo '{"Tags":[]}' > "${tags}"
+        else
+          cat /tmp/skopeo-list-tags.err >&2
+          exit 1
+        fi
+      fi
     fi
 
     if [[ $(jq --arg tag "${tag}" --arg timestamp "${TIMESTAMP}" 'any(.Tags[]; contains($tag + "-" + $timestamp))' < "${tags}") == "true" ]]; then
