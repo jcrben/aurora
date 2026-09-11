@@ -1,16 +1,10 @@
 name: Validate Justfiles
 
 on:
-  pull_request:
-    paths:
-      - "Justfile"
-      - "just/*"
-  push:
-    branches:
-      - main
-    paths:
-      - "Justfile"
-      - "just/*"
+  # jcrben replica (2026-09-11): on-demand only, everything in this fork —
+  # dropped upstream's pull_request/push auto-triggers, same as every other
+  # workflow here.
+  workflow_dispatch:
 
 permissions: {}
 

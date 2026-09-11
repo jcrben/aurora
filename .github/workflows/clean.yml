@@ -1,7 +1,7 @@
 name: Cleanup Old Images
 on:
-  schedule:
-    - cron: "15 0 * * 0" # 0015 UTC on Sundays
+  # jcrben replica (2026-09-11): on-demand only, see validate-just.yml. No
+  # weekly cron — run manually if the package list ever needs tidying.
   workflow_dispatch:
 
 permissions: {}
