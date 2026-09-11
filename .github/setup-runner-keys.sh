@@ -22,6 +22,29 @@ set -eoux pipefail
 PKI_DIR="/etc/pki/containers"
 REGISTRIES="/etc/containers/registries.d"
 
+# Staleness guard (advisor-flagged, 2026-09-11): ublue-os HAS rotated this key
+# before (git log --oneline -- cosign.pub upstream shows 2d50cf0f, one
+# rotation in ~2 years) and will again. The failure mode if
+# .github/ublue-os-cosign.pub ever goes stale is the exact cryptic
+# "invalid signature" error that cost real diagnostic time today, and
+# nothing else catches it before the build — build_scripts/base/20-tests.sh
+# only asserts the SAME pin, but from *inside* the image, after the pull
+# that would already have failed. Grep the pin out of that file (not a
+# second hardcoded copy) so an upstream merge that updates it trips this
+# assertion automatically with a self-describing error, instead of the pin
+# silently drifting out of sync with a hand-maintained duplicate.
+EXPECTED_SHA256=$(grep -oP 'KEY1_SHA256="\K[0-9a-f]{64}' build_scripts/base/20-tests.sh)
+if [[ -z "${EXPECTED_SHA256}" ]]; then
+  echo "setup-runner-keys.sh: could not extract KEY1_SHA256 from build_scripts/base/20-tests.sh — upstream may have renamed the variable; fix this script's grep pattern." >&2
+  exit 1
+fi
+ACTUAL_SHA256=$(sha256sum .github/ublue-os-cosign.pub | cut -d' ' -f1)
+if [[ "${ACTUAL_SHA256}" != "${EXPECTED_SHA256}" ]]; then
+  echo "setup-runner-keys.sh: .github/ublue-os-cosign.pub (${ACTUAL_SHA256}) no longer matches ublue-os's current signing key pin (${EXPECTED_SHA256}, from build_scripts/base/20-tests.sh)." >&2
+  echo "ublue-os likely rotated their cosign key. Fetch their current cosign.pub and update .github/ublue-os-cosign.pub." >&2
+  exit 1
+fi
+
 mkdir -p "${PKI_DIR}" "${REGISTRIES}"
 cp .github/ublue-os-cosign.pub "${PKI_DIR}/ghcr.io-ublue-os.pub"
 cp quay.io-fedora-ostree-desktops.pub "${PKI_DIR}"
