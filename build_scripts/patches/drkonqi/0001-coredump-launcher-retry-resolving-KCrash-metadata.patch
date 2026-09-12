@@ -1,0 +1,196 @@
+From e537cb9a999137cb3426386657fa868d7ea83ec2 Mon Sep 17 00:00:00 2001
+From: Ben Creasy <5614134+jcrben@users.noreply.github.com>
+Date: Fri, 11 Sep 2026 16:19:55 -0700
+Subject: [PATCH] coredump/launcher: retry resolving KCrash metadata instead of
+ a single check
+
+drkonqi-coredump-launcher is woken up independently, via the coredump
+socket, of KCrash's own in-process signal handler writing the sidecar
+kcrash-metadata/<exe>.<bootid>.<pid>.ini file. The two race: the launcher
+previously checked for that file exactly once and, on a miss, permanently
+fell back to synthesized/generic metadata and logged "KCrash metadata not
+marked complete" - even though the file is written completely and
+correctly (including the KCrashComplete marker) a short moment later.
+
+Confirmed with gdb on a live crash: the file is opened O_WRONLY|O_CREAT|
+O_TRUNC by KCrash's handler and, once written, is fully valid - the
+launcher's single check had simply already run and given up before that
+write landed.
+
+Poll for the file for a bounded 2s window (checking every 50ms) instead of
+giving up on the first miss. Added an autotest that reproduces the race
+with a delayed write and verifies both that the fix waits for it and that
+a genuinely-never-written file still resolves promptly to empty.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GRSmqLcEvFEEPJBtTtMeCc
+---
+ src/core/CMakeLists.txt             |  2 +
+ src/core/autotests/CMakeLists.txt   |  8 +++
+ src/core/autotests/metadatatest.cpp | 75 +++++++++++++++++++++++++++++
+ src/core/metadata.cpp               | 29 ++++++++---
+ 4 files changed, 108 insertions(+), 6 deletions(-)
+ create mode 100644 src/core/autotests/CMakeLists.txt
+ create mode 100644 src/core/autotests/metadatatest.cpp
+
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 0701a115..2cf7c249 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -10,3 +10,5 @@ target_compile_options(
+     PRIVATE
+         -DKDE_INSTALL_FULL_LIBEXECDIR=\"${KDE_INSTALL_FULL_LIBEXECDIR}\"
+ )
++
++add_subdirectory(autotests)
+diff --git a/src/core/autotests/CMakeLists.txt b/src/core/autotests/CMakeLists.txt
+new file mode 100644
+index 00000000..6e5a82f3
+--- /dev/null
++++ b/src/core/autotests/CMakeLists.txt
+@@ -0,0 +1,8 @@
++# SPDX-License-Identifier: BSD-3-Clause
++# SPDX-FileCopyrightText: 2026 Ben Creasy <5614134+jcrben@users.noreply.github.com>
++
++if(NOT BUILD_TESTING)
++    return()
++endif()
++
++ecm_add_tests(metadatatest.cpp LINK_LIBRARIES Qt::Core Qt::Test drkonqi-core)
+diff --git a/src/core/autotests/metadatatest.cpp b/src/core/autotests/metadatatest.cpp
+new file mode 100644
+index 00000000..0a56424e
+--- /dev/null
++++ b/src/core/autotests/metadatatest.cpp
+@@ -0,0 +1,75 @@
++/*
++    SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
++    SPDX-FileCopyrightText: 2026 Ben Creasy <5614134+jcrben@users.noreply.github.com>
++*/
++
++#include <QDir>
++#include <QFile>
++#include <QStandardPaths>
++#include <QTemporaryDir>
++#include <QTest>
++#include <QThread>
++
++#include "metadata.h"
++
++class MetadataTest : public QObject
++{
++    Q_OBJECT
++
++    QTemporaryDir m_cacheDir;
++
++private Q_SLOTS:
++    void initTestCase()
++    {
++        QVERIFY(m_cacheDir.isValid());
++        // Deliberately NOT QStandardPaths::setTestModeEnabled(true) - it redirects
++        // GenericCacheLocation independently of XDG_CACHE_HOME, which would make the
++        // writer thread below (which writes directly into m_cacheDir) land somewhere
++        // resolveKCrashMetadataPath()'s QStandardPaths::locate() call never looks.
++        qputenv("XDG_CACHE_HOME", m_cacheDir.path().toUtf8());
++    }
++
++    // KCrash's handler writes the metadata file synchronously inside the still-dying process,
++    // independently of and racing against drkonqi-coredump-launcher being woken up via the
++    // coredump socket. resolveKCrashMetadataPath() used to check for the file exactly once and
++    // give up permanently on a miss - this reproduces that race with a delayed write landing well
++    // after t=0, and verifies the fix (a bounded poll instead of a single check) finds it anyway.
++    void testFindsDelayedWrite()
++    {
++        const QString exe = QStringLiteral("/usr/bin/kdeconnectd");
++        const QString bootId = QStringLiteral("testboot123");
++        const int pid = 999999;
++
++        const QString metadataDir = m_cacheDir.path() + QStringLiteral("/kcrash-metadata");
++        QVERIFY(QDir().mkpath(metadataDir));
++        const QString expectedFile = metadataDir + QStringLiteral("/kdeconnectd.testboot123.999999.ini");
++
++        QThread *writer = QThread::create([expectedFile] {
++            QThread::msleep(300);
++            QFile f(expectedFile);
++            QVERIFY(f.open(QFile::WriteOnly));
++            f.write("[KCrash]\nsignal=11\n[KCrashComplete]\nComplete=1\n");
++        });
++        writer->start();
++
++        const QString result = Metadata::resolveKCrashMetadataPath(exe, bootId, pid);
++
++        writer->wait();
++        delete writer;
++
++        QCOMPARE(result, expectedFile);
++    }
++
++    // The file genuinely not existing (a coredump with no KCrash involvement at all, e.g. a
++    // plain non-Qt binary) must still resolve promptly to empty rather than hang for the full
++    // poll window - covered separately so the delayed-write test above stays focused.
++    void testNeverWrittenResolvesEmpty()
++    {
++        const QString result = Metadata::resolveKCrashMetadataPath(QStringLiteral("/usr/bin/bash"), QStringLiteral("testboot123"), 999998);
++        QVERIFY(result.isEmpty());
++    }
++};
++
++QTEST_GUILESS_MAIN(MetadataTest)
++
++#include "metadatatest.moc"
+diff --git a/src/core/metadata.cpp b/src/core/metadata.cpp
+index fe6c4e43..64aef692 100644
+--- a/src/core/metadata.cpp
++++ b/src/core/metadata.cpp
+@@ -3,8 +3,14 @@
+ 
+ #include "metadata.h"
+ 
++#include <chrono>
++
++#include <QDeadlineTimer>
+ #include <QFileInfo>
+ #include <QStandardPaths>
++#include <QThread>
++
++using namespace std::chrono_literals;
+ 
+ namespace Metadata
+ {
+@@ -23,16 +29,27 @@ namespace Metadata
+     const QString command = QFileInfo(exe).fileName();
+ 
+     const QString nameV2 = QStringLiteral("kcrash-metadata/%1.%2.%3.ini").arg(command, bootId, QString::number(pid));
+-    const QString pathV2 = QStandardPaths::locate(QStandardPaths::GenericCacheLocation, nameV2);
+-
+     // Backwards compat for a while. Can be dropped before/after Plasma 6.0
+     const QString nameV1 = QStringLiteral("kcrash-metadata/%1.ini").arg(pid);
+-    const QString pathV1 = QStandardPaths::locate(QStandardPaths::GenericCacheLocation, nameV1);
+ 
+-    for (const auto &path : {pathV2, pathV1}) {
+-        if (!path.isEmpty() && QFile::exists(path)) {
+-            return path;
++    // KCrash's handler runs synchronously inside the still-dying process and can take a brief moment to finish
++    // writing this file after we're woken up here, since we're activated independently (via the coredump socket)
++    // and race against it rather than being ordered after it. A single immediate check is prone to losing that
++    // race even though the file reliably appears within a couple hundred milliseconds. Poll for a bounded window
++    // instead of giving up on the very first miss.
++    QDeadlineTimer deadline(2s);
++    while (true) {
++        const QString pathV2 = QStandardPaths::locate(QStandardPaths::GenericCacheLocation, nameV2);
++        const QString pathV1 = QStandardPaths::locate(QStandardPaths::GenericCacheLocation, nameV1);
++        for (const auto &path : {pathV2, pathV1}) {
++            if (!path.isEmpty() && QFile::exists(path)) {
++                return path;
++            }
+         }
++        if (deadline.hasExpired()) {
++            break;
++        }
++        QThread::msleep(50);
+     }
+ 
+     qWarning() << "Unable to find file for pid" << pid << "expected at" << nameV2;
+-- 
+2.55.0
+
